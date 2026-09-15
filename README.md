@@ -2,7 +2,7 @@
 
 A living wallpaper made of artificial organisms. Continuous cellular automata running on your GPU, filling the screen with small creatures that swim, pair off, split and compete for space — indefinitely, without supervision.
 
-![Lenia Fishtank running the fission species](docs/screenshot.png)
+![Lenia Fishtank running the fission species] (https://raw.githubusercontent.com/MushroomFleet/Lenia-Fishtank/refs/heads/main/original-lenia.png)
 
 ---
 

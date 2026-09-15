@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>fission — a Lenia tank</title>
+<style>
+  :root{
+    --tank: #000;
+    --void: #0a0a0e;
+    --panel: rgba(14,12,20,.82);
+    --edge: rgba(236,72,201,.28);
+    --ink: #e9e4f2;
+    --dim: #948da6;
+    --live: #4ade9b;
+  }
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; background:var(--void); }
+  body{
+    font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  canvas{ display:block; width:100vw; height:100vh; cursor:crosshair; touch-action:none; }
+  canvas.panning{ cursor:grabbing; }
+
+  #ui{
+    position:fixed; top:14px; right:14px; width:250px;
+    background:var(--panel);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border:1px solid var(--edge); border-radius:10px;
+    padding:12px 13px 11px;
+    box-shadow: 0 10px 34px rgba(0,0,0,.55);
+    user-select:none;
+  }
+  #ui.hidden{ display:none; }
+  #ui h1{
+    margin:0; font-size:14px; font-weight:600; letter-spacing:.01em;
+  }
+  #ui h1 small{ display:block; font-weight:400; font-size:11px; color:var(--dim); letter-spacing:0; margin-top:1px; }
+  .head{ display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:11px; }
+
+  button, select{
+    font:inherit; color:var(--ink); background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.1); border-radius:7px;
+    padding:6px 9px; cursor:pointer;
+  }
+  button:hover{ background:rgba(255,255,255,.12); }
+  button:active{ transform: translateY(1px); }
+  button:focus-visible, input:focus-visible{ outline:2px solid var(--live); outline-offset:2px; }
+  .ghost{ background:none; border:none; color:var(--dim); padding:2px 5px; font-size:15px; line-height:1; }
+  .ghost:hover{ color:var(--ink); background:none; }
+
+  .grid4{ display:grid; grid-template-columns:repeat(2,1fr); gap:6px; }
+  .grid4 button{ text-align:center; }
+  #pause{ grid-column:1 / -1; color:var(--live); border-color:rgba(74,222,155,.35); }
+
+  .row{ display:flex; align-items:center; gap:9px; margin-top:10px; }
+  .row .name{ width:16px; color:var(--dim); flex:none; }
+  .row .num{ width:46px; text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; flex:none; }
+  input[type=range]{ flex:1; min-width:0; accent-color:#ec48c9; height:18px; }
+
+  details{ margin-top:12px; border-top:1px solid rgba(255,255,255,.08); padding-top:8px; }
+  summary{ cursor:pointer; color:var(--dim); list-style:none; display:flex; justify-content:space-between; }
+  summary::-webkit-details-marker{ display:none; }
+  summary::after{ content:"open"; font-size:11px; }
+  details[open] summary::after{ content:"close"; }
+  details p{ margin:8px 0 0; color:var(--dim); font-size:11.5px; }
+  #reset{ width:100%; margin-top:10px; }
+
+  .check{ display:flex; align-items:center; gap:8px; margin-top:11px; color:var(--dim); cursor:pointer; }
+  .check input{ accent-color:var(--live); }
+
+  .keys{ margin:11px 0 0; color:var(--dim); font-size:11.5px; }
+  .keys b{ color:var(--ink); font-weight:500; }
+
+  #show{
+    position:fixed; top:14px; right:14px; display:none;
+    background:var(--panel); border:1px solid var(--edge); color:var(--dim);
+    border-radius:8px; padding:6px 10px;
+  }
+  #show.on{ display:block; }
+
+  #err{
+    position:fixed; inset:0; display:none; place-content:center; padding:32px;
+    background:var(--void); color:var(--ink); text-align:center; white-space:pre-wrap;
+  }
+  @media (max-width:520px){
+    #ui{ left:10px; right:10px; width:auto; top:10px; }
+  }
+  @media (prefers-reduced-motion: reduce){ button:active{ transform:none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<button id="show">fission</button>
+
+<aside id="ui">
+  <div class="head">
+    <h1>fission<small>15-kernel Lenia, 3 channels</small></h1>
+    <button class="ghost" id="hide" title="Hide the panel (H)" aria-label="Hide the panel">×</button>
+  </div>
+
+  <div class="grid4">
+    <button id="pause">Pause</button>
+    <button id="reseed">New soup</button>
+    <button id="clear">Empty tank</button>
+    <button id="fit">Fit view</button>
+    <button id="snap">Save image</button>
+  </div>
+
+  <div class="row">
+    <span class="name" title="simulation steps per second">fps</span>
+    <input id="speed" type="range" min="1" max="240" value="60" aria-label="Simulation speed">
+    <span class="num" id="speedv">60</span>
+  </div>
+
+  <label class="check"><input type="checkbox" id="auto" checked> Refill when the tank dies</label>
+
+  <details>
+    <summary>Rule</summary>
+    <div class="row"><span class="name" title="kernel radius">R</span><input id="pR" type="range" min="3" max="14" step="0.5" value="9"><span class="num" id="pRv">9.0</span></div>
+    <div class="row"><span class="name" title="time step divisor — higher is slower and smoother">T</span><input id="pT" type="range" min="0.5" max="8" step="0.1" value="2"><span class="num" id="pTv">2.0</span></div>
+    <div class="row"><span class="name" title="growth centre offset">μ</span><input id="pMu" type="range" min="-0.1" max="0.1" step="0.001" value="0"><span class="num" id="pMuv">+0.000</span></div>
+    <div class="row"><span class="name" title="growth width scale">σ</span><input id="pSig" type="range" min="0.5" max="2" step="0.01" value="1"><span class="num" id="pSigv">1.00×</span></div>
+    <div class="row"><span class="name" title="growth strength scale">η</span><input id="pEta" type="range" min="0" max="2" step="0.01" value="1"><span class="num" id="pEtav">1.00×</span></div>
+    <div class="row"><span class="name" title="kernel ring width">w</span><input id="pRing" type="range" min="0.02" max="0.4" step="0.005" value="0.15"><span class="num" id="pRingv">0.150</span></div>
+    <button id="reset">Back to fission</button>
+    <p>Small nudges keep the swimmers alive. Big ones make new things — or soup.</p>
+  </details>
+
+  <p class="keys"><b>drag</b> seed life · <b>right-drag</b> pan · <b>scroll</b> zoom · <b>space</b> pause · <b>h</b> hide panel</p>
+</aside>
+
+<div id="err"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// fission — a self-contained Lenia tank.
+// Continuous cellular automaton: three channels, fifteen ring kernels, each
+// convolving one channel and feeding growth into another. Everything runs on
+// the GPU; the CPU only seeds the soup and watches for extinction.
+// ---------------------------------------------------------------------------
+
+const SPECIES = {"worldSize": 128, "R": 9, "T": 2, "numKernels": 15, "init": {"type": "random", "baseNoise": 0.1, "randomScale": 1}, "name": "fission", "betaLen": [1, 1, 2, 2, 1, 2, 1, 1, 1, 2, 2, 2, 1, 2, 1], "beta0": [1, 1, 1, 0, 1, 0.8333333333333334, 1, 1, 1, 0.9166666666666666, 0.75, 0.9166666666666666, 1, 0.16666666666666666, 1], "beta1": [0, 0, 0.25, 1, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0], "beta2": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "src": [0, 0, 0, 1, 1, 1, 2, 2, 2, 0, 0, 1, 1, 2, 2], "dst": [0, 0, 0, 1, 1, 1, 2, 2, 2, 1, 2, 0, 2, 0, 1], "mu": [0.272, 0.349, 0.2, 0.114, 0.447, 0.247, 0.21, 0.462, 0.446, 0.327, 0.476, 0.379, 0.262, 0.412, 0.201], "sigma": [0.0595, 0.1585, 0.0332, 0.0528, 0.0777, 0.0342, 0.0617, 0.1192, 0.1793, 0.1408, 0.0995, 0.0697, 0.0877, 0.1101, 0.0786], "eta": [0.19, 0.66, 0.39, 0.38, 0.74, 0.92, 0.59, 0.37, 0.94, 0.51, 0.77, 0.92, 0.71, 0.59, 0.41], "relR": [0.91, 0.62, 0.5, 0.97, 0.72, 0.8, 0.96, 0.56, 0.78, 0.79, 0.5, 0.72, 0.68, 0.55, 0.82]};
+
+const canvas = document.getElementById("c");
+const errBox = document.getElementById("err");
+function fail(msg){ errBox.style.display = "grid"; errBox.textContent = msg; throw new Error(msg); }
+
+const gl = canvas.getContext("webgl2", { antialias:false, preserveDrawingBuffer:true });
+if (!gl) fail("This tank needs WebGL2, which this browser isn't providing.");
+if (!gl.getExtension("EXT_color_buffer_float")) fail("This tank needs float render targets (EXT_color_buffer_float).");
+
+// ---------- shaders ----------
+const VERT = `#version 300 es
+in vec2 aPos;
+void main(){ gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const SIM_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D uState;
+uniform ivec2 uSizeI;
+uniform float uR, uT;
+uniform float uMuOff, uSigmaScale, uEtaScale, uRingW, uRelRScale;   // live, panel-controlled modifiers
+uniform mat4 mBetaLen, mBeta0, mBeta1, mBeta2;
+uniform mat4 mMu, mSigma, mEta, mRelR;
+uniform mat4 srcK0, srcK1, srcK2, dstK0, dstK1, dstK2;
+out vec4 fragColor;
+
+#define cm matrixCompMult
+const mat4 M0 = mat4(0.0);
+const mat4 M1 = mat4(vec4(1.0), vec4(1.0), vec4(1.0), vec4(1.0));
+const mat4 EPS = mat4(vec4(1e-6), vec4(1e-6), vec4(1e-6), vec4(1e-6));
+const mat4 KM = mat4(vec4(0.5), vec4(0.5), vec4(0.5), vec4(0.5));   // kernel ring center
+
+mat4 exp4(mat4 m){ return mat4(exp(m[0]), exp(m[1]), exp(m[2]), exp(m[3])); }
+mat4 floor4(mat4 m){ return mat4(floor(m[0]), floor(m[1]), floor(m[2]), floor(m[3])); }
+mat4 eqRing(mat4 r, float v){
+  vec4 vv = vec4(v);
+  return mat4(vec4(equal(r[0], vv)), vec4(equal(r[1], vv)), vec4(equal(r[2], vv)), vec4(equal(r[3], vv)));
+}
+// bell-shaped curve, component-wise over a mat4
+mat4 bell4(mat4 x, mat4 m, mat4 s){
+  mat4 d = (x - m) / s;
+  return exp4(cm(d, d) * -0.5);
+}
+// per-kernel neighbour weight at radius r (0 outside support)
+mat4 getWeight(float r){
+  if (r > uR) return M0;
+  mat4 Br = mBetaLen * (r / uR) / (mRelR * uRelRScale);
+  mat4 ring = floor4(Br);
+  mat4 height = cm(mBeta0, eqRing(ring, 0.0)) + cm(mBeta1, eqRing(ring, 1.0)) + cm(mBeta2, eqRing(ring, 2.0));
+  mat4 ks = mat4(vec4(uRingW), vec4(uRingW), vec4(uRingW), vec4(uRingW));   // global ring width
+  return cm(height, bell4(Br - ring, KM, ks));
+}
+float mdot(mat4 a, mat4 b){ return dot(a[0],b[0]) + dot(a[1],b[1]) + dot(a[2],b[2]) + dot(a[3],b[3]); }
+
+void addN(ivec2 q, mat4 w, inout mat4 sum, inout mat4 total){
+  q = (q % uSizeI + uSizeI) % uSizeI;   // toroidal wrap (texelFetch ignores REPEAT)
+  vec3 v = texelFetch(uState, q, 0).rgb;
+  mat4 valueK = srcK0 * v.r + srcK1 * v.g + srcK2 * v.b;
+  sum += cm(valueK, w);
+  total += w;
+}
+
+void main(){
+  ivec2 ip = ivec2(gl_FragCoord.xy);
+  vec3 self = texelFetch(uState, ip, 0).rgb;
+
+  mat4 sum = M0, total = M0;
+  addN(ip, getWeight(0.0), sum, total);
+
+  int IR = int(ceil(uR));
+  for (int x = 1; x <= IR; x++){
+    mat4 wo = getWeight(float(x));            // orthogonal: 4 neighbours share this weight
+    addN(ip + ivec2( x, 0), wo, sum, total);
+    addN(ip + ivec2(-x, 0), wo, sum, total);
+    addN(ip + ivec2( 0, x), wo, sum, total);
+    addN(ip + ivec2( 0,-x), wo, sum, total);
+    float rd = sqrt(2.0) * float(x);          // diagonal: 4 neighbours share this weight
+    if (rd <= uR){
+      mat4 wd = getWeight(rd);
+      addN(ip + ivec2( x, x), wd, sum, total);
+      addN(ip + ivec2( x,-x), wd, sum, total);
+      addN(ip + ivec2(-x, x), wd, sum, total);
+      addN(ip + ivec2(-x,-x), wd, sum, total);
+    }
+  }
+  for (int y = 1; y <= IR; y++){
+    for (int x = y + 1; x <= IR; x++){        // general octant: 8 neighbours share this weight
+      float r = sqrt(float(x*x + y*y));
+      if (r > uR) continue;
+      mat4 w = getWeight(r);
+      addN(ip + ivec2( x, y), w, sum, total);
+      addN(ip + ivec2( x,-y), w, sum, total);
+      addN(ip + ivec2(-x, y), w, sum, total);
+      addN(ip + ivec2(-x,-y), w, sum, total);
+      addN(ip + ivec2( y, x), w, sum, total);
+      addN(ip + ivec2( y,-x), w, sum, total);
+      addN(ip + ivec2(-y, x), w, sum, total);
+      addN(ip + ivec2(-y,-x), w, sum, total);
+    }
+  }
+
+  mat4 avg = sum / (total + EPS);
+  mat4 growthK = cm(mEta, bell4(avg, mMu + uMuOff * M1, mSigma * uSigmaScale) * 2.0 - M1) * (uEtaScale / uT);
+  vec3 growth = vec3(mdot(growthK, dstK0), mdot(growthK, dstK1), mdot(growthK, dstK2));
+  fragColor = vec4(clamp(self + growth, 0.0, 1.0), 1.0);
+}`;
+
+const BG = "vec3(0.04, 0.04, 0.06)";
+const VIS_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D uState;
+uniform ivec2 uGrid;
+uniform vec2 uRes;
+uniform vec2 uCenter;  // grid-cell coordinate shown at the screen centre
+uniform float uPx;     // drawing-buffer pixels per cell
+uniform int uMono;     // 1 = single-channel save: broadcast R to white instead of red
+out vec4 o;
+void main(){
+  vec2 screen = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);  // top-left origin
+  vec2 cellf = uCenter + (screen - uRes * 0.5) / uPx;
+  ivec2 c = ivec2(floor(cellf));
+  if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y){
+    o = vec4(${BG}, 1.0);
+    return;
+  }
+  vec3 v = texelFetch(uState, c, 0).rgb;
+  if (uMono == 1) v = vec3(v.r);
+  o = vec4(v, 1.0);
+}`;
+
+function compile(type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src); gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) fail("shader: " + gl.getShaderInfoLog(sh));
+  return sh;
+}
+function program(vs, fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail("link: " + gl.getProgramInfoLog(p));
+  return p;
+}
+const simProg = program(VERT, SIM_FS);
+const visProg = program(VERT, VIS_FS);
+
+const SIM_MATS = ["mBetaLen","mBeta0","mBeta1","mBeta2","mMu","mSigma","mEta","mRelR",
+                  "srcK0","srcK1","srcK2","dstK0","dstK1","dstK2"];
+const simU = {};
+for (const n of ["uState","uSizeI","uR","uT","uMuOff","uSigmaScale","uEtaScale","uRingW","uRelRScale", ...SIM_MATS])
+  simU[n] = gl.getUniformLocation(simProg, n);
+const visU = {};
+for (const n of ["uState","uGrid","uRes","uCenter","uPx","uMono"])
+  visU[n] = gl.getUniformLocation(visProg, n);
+
+// fullscreen triangle
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+for (const prog of [simProg, visProg]){
+  const loc = gl.getAttribLocation(prog, "aPos");
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+
+// ---------- world ----------
+const CELL = 4;                  // CSS pixels per cell at the default zoom
+let WW = 128, WH = 128;
+let texA, texB, fboA, fboB, flip = false;
+const view = { cx:0, cy:0, px:1 };
+let userMoved = false;
+
+const fitPx = () => Math.min(canvas.width / WW, canvas.height / WH);
+function fitView(){ view.px = fitPx(); view.cx = WW/2; view.cy = WH/2; userMoved = false; }
+
+function makeTex(){
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return t;
+}
+function makeFbo(tex){
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return f;
+}
+
+// smooth value noise in [-1,1]; the soup every creature grows out of
+function valueNoise(width, channelSeed, scale){
+  const cells = Math.max(2, Math.ceil(width / scale) + 1);
+  const grid = new Float32Array(cells * cells);
+  let s = 1234.567 * (channelSeed + 1) + Math.random() * 9999.0;
+  const rnd = () => { s = Math.sin(s) * 43758.5453; return (s - Math.floor(s)) * 2.0 - 1.0; };
+  for (let i = 0; i < grid.length; i++) grid[i] = rnd();
+  const smooth = t => t * t * (3 - 2 * t);
+  return (x, y) => {
+    const gx = x / scale, gy = y / scale;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const fx = smooth(gx - x0), fy = smooth(gy - y0);
+    const g = (ix, iy) => grid[(iy % cells) * cells + (ix % cells)];
+    const a = g(x0,y0), b = g(x0+1,y0), c = g(x0,y0+1), d = g(x0+1,y0+1);
+    return a + (b-a)*fx + (c-a)*fy + (a-b-c+d)*fx*fy;
+  };
+}
+
+function soup(){
+  const data = new Float32Array(WW * WH * 4);
+  const base = SPECIES.init.baseNoise ?? 0.1;
+  const scale = SPECIES.R * (SPECIES.init.randomScale ?? 1.0);
+  const span = Math.max(WW, WH);
+  const n = [valueNoise(span,0,scale), valueNoise(span,1,scale), valueNoise(span,2,scale)];
+  for (let y = 0; y < WH; y++)
+    for (let x = 0; x < WW; x++){
+      const i = (y*WW + x) * 4;
+      for (let ch = 0; ch < 3; ch++) data[i+ch] = Math.min(1, Math.max(0, base + n[ch](x,y)));
+      data[i+3] = 1;
+    }
+  return data;
+}
+function empty(){
+  const data = new Float32Array(WW * WH * 4);
+  for (let i = 0; i < WW*WH; i++) data[i*4+3] = 1;
+  return data;
+}
+function writeTex(tex, data){
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, WW, WH, gl.RGBA, gl.FLOAT, data);
+}
+
+// pack a per-kernel array into a mat4's 16 lanes (lane i = kernel i)
+function packMat(a, fill){
+  const o = new Float32Array(16).fill(fill);
+  for (let i = 0; i < Math.min(16, a.length); i++) o[i] = a[i];
+  return o;
+}
+
+function build(){
+  WW = Math.max(64, Math.round(window.innerWidth / CELL));
+  WH = Math.max(64, Math.round(window.innerHeight / CELL));
+  const seed = soup();
+  texA = makeTex(); gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, WW, WH, 0, gl.RGBA, gl.FLOAT, seed);
+  texB = makeTex(); gl.bindTexture(gl.TEXTURE_2D, texB);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, WW, WH, 0, gl.RGBA, gl.FLOAT, null);
+  fboA = makeFbo(texA); fboB = makeFbo(texB);
+  flip = false; maxSteps = 4;
+  fitView();
+
+  const nk = SPECIES.numKernels;
+  const maskMat = (arr, c) => { const o = new Float32Array(16); for (let i = 0; i < nk; i++) o[i] = (arr[i] === c) ? 1 : 0; return o; };
+  gl.useProgram(simProg);
+  gl.uniform2i(simU.uSizeI, WW, WH);
+  gl.uniformMatrix4fv(simU.mBetaLen, false, packMat(SPECIES.betaLen, 0));
+  gl.uniformMatrix4fv(simU.mBeta0,   false, packMat(SPECIES.beta0, 0));
+  gl.uniformMatrix4fv(simU.mBeta1,   false, packMat(SPECIES.beta1, 0));
+  gl.uniformMatrix4fv(simU.mBeta2,   false, packMat(SPECIES.beta2, 0));
+  gl.uniformMatrix4fv(simU.mMu,      false, packMat(SPECIES.mu, 0));
+  gl.uniformMatrix4fv(simU.mSigma,   false, packMat(SPECIES.sigma, 1));  // pad 1: no divide by zero
+  gl.uniformMatrix4fv(simU.mEta,     false, packMat(SPECIES.eta, 0));    // pad 0: dead lanes grow nothing
+  gl.uniformMatrix4fv(simU.mRelR,    false, packMat(SPECIES.relR, 1));
+  gl.uniformMatrix4fv(simU.srcK0,    false, maskMat(SPECIES.src, 0));
+  gl.uniformMatrix4fv(simU.srcK1,    false, maskMat(SPECIES.src, 1));
+  gl.uniformMatrix4fv(simU.srcK2,    false, maskMat(SPECIES.src, 2));
+  gl.uniformMatrix4fv(simU.dstK0,    false, maskMat(SPECIES.dst, 0));
+  gl.uniformMatrix4fv(simU.dstK1,    false, maskMat(SPECIES.dst, 1));
+  gl.uniformMatrix4fv(simU.dstK2,    false, maskMat(SPECIES.dst, 2));
+  applyRule();
+}
+
+function resize(){
+  canvas.width  = Math.max(1, Math.floor(window.innerWidth));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight));
+}
+
+function step(){
+  gl.useProgram(simProg);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, flip ? fboA : fboB);
+  gl.viewport(0, 0, WW, WH);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, flip ? texB : texA);
+  gl.uniform1i(simU.uState, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  flip = !flip;
+}
+function draw(){
+  gl.useProgram(visProg);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, flip ? texB : texA);
+  gl.uniform1i(visU.uState, 0);
+  gl.uniform2i(visU.uGrid, WW, WH);
+  gl.uniform2f(visU.uRes, canvas.width, canvas.height);
+  gl.uniform2f(visU.uCenter, view.cx, view.cy);
+  gl.uniform1f(visU.uPx, view.px);
+  gl.uniform1i(visU.uMono, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ---------- reading state back (RGBA16F may only be readable as half floats) ----------
+function halfToFloat(h){
+  const s = (h & 0x8000) ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
+  if (e === 0) return s * m * 5.9604644775390625e-8;
+  if (e === 31) return m ? NaN : s * Infinity;
+  return s * (m + 1024) * Math.pow(2, e - 25);
+}
+let readType = null;
+function readPatch(fbo, x, y, w, h){
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  if (readType === null) readType = gl.getParameter(gl.IMPLEMENTATION_COLOR_READ_TYPE);
+  const type = readType;
+  if (type === gl.FLOAT){
+    const out = new Float32Array(w * h * 4);
+    gl.readPixels(x, y, w, h, gl.RGBA, gl.FLOAT, out);
+    return out;
+  }
+  const raw = new Uint16Array(w * h * 4);
+  gl.readPixels(x, y, w, h, gl.RGBA, gl.HALF_FLOAT, raw);
+  const out = new Float32Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = halfToFloat(raw[i]);
+  return out;
+}
+
+// ---------- seeding by hand ----------
+function pointerCell(e){
+  const r = canvas.getBoundingClientRect();
+  const s = canvas.width / r.width;
+  const x = (e.clientX - r.left) * s, y = (e.clientY - r.top) * s;
+  return { x: view.cx + (x - canvas.width*0.5) / view.px,
+           y: view.cy + (y - canvas.height*0.5) / view.px };
+}
+function stamp(e){
+  const { x: gx, y: gy } = pointerCell(e);
+  const scale = SPECIES.R * (SPECIES.init.randomScale || 1);
+  const rad = Math.max(18, Math.round(SPECIES.R * 2));
+  const x0 = Math.max(0, Math.floor(gx - rad)), y0 = Math.max(0, Math.floor(gy - rad));
+  const x1 = Math.min(WW, Math.ceil(gx + rad) + 1), y1 = Math.min(WH, Math.ceil(gy + rad) + 1);
+  const w = x1 - x0, h = y1 - y0;
+  if (w <= 0 || h <= 0) return;
+
+  const target = flip ? texB : texA;
+  const patch = readPatch(flip ? fboB : fboA, x0, y0, w, h);   // keep whatever is already there
+  const span = Math.max(w, h);
+  const n = [valueNoise(span,0,scale), valueNoise(span,1,scale), valueNoise(span,2,scale)];
+  for (let py = 0; py < h; py++)
+    for (let px = 0; px < w; px++){
+      const pi = (py*w + px) * 4;
+      patch[pi+3] = 1;
+      if (Math.hypot(x0 + px + 0.5 - gx, y0 + py + 0.5 - gy) > rad) continue;
+      for (let ch = 0; ch < 3; ch++)
+        patch[pi+ch] = Math.min(1, Math.max(0, 0.5 + 0.5 * n[ch](px, py)));
+    }
+  gl.bindTexture(gl.TEXTURE_2D, target);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, patch);
+}
+
+// ---------- extinction watch ----------
+// Sample a coarse grid of the state now and then. An empty tank (everything
+// starved) or a flooded one (everything saturated) both stop being interesting,
+// so refill with fresh soup.
+let lastCheck = 0;
+function tankIsDead(){
+  const sw = Math.min(WW, 96), sh = Math.min(WH, 96);
+  const px = readPatch(flip ? fboB : fboA, 0, 0, sw, sh);
+  let sum = 0, live = 0;
+  for (let i = 0; i < sw*sh; i++){
+    const v = (px[i*4] + px[i*4+1] + px[i*4+2]) / 3;
+    sum += v;
+    if (v > 0.04 && v < 0.99) live++;
+  }
+  const mean = sum / (sw*sh), frac = live / (sw*sh);
+  return mean < 0.008 || frac < 0.004 || mean > 0.93;
+}
+
+// ---------- controls ----------
+const ui = document.getElementById("ui");
+const showBtn = document.getElementById("show");
+const pauseBtn = document.getElementById("pause");
+const speedEl = document.getElementById("speed"), speedV = document.getElementById("speedv");
+const autoEl = document.getElementById("auto");
+let paused = false, stepsPerSec = 60, acc = 0;
+
+function setPaused(p){
+  paused = p;
+  pauseBtn.textContent = paused ? "Play" : "Pause";
+  acc = 0;
+}
+pauseBtn.onclick = () => { setPaused(!paused); pauseBtn.blur(); };
+speedEl.oninput = () => { stepsPerSec = +speedEl.value; speedV.textContent = speedEl.value; };
+
+function reseed(){ const d = soup(); writeTex(texA, d); writeTex(texB, d); flip = false; acc = 0; }
+function clearTank(){ const d = empty(); writeTex(texA, d); writeTex(texB, d); flip = false; acc = 0; }
+document.getElementById("reseed").onclick = e => { reseed(); e.target.blur(); };
+document.getElementById("clear").onclick  = e => { clearTank(); e.target.blur(); };
+document.getElementById("fit").onclick    = e => { fitView(); e.target.blur(); };
+document.getElementById("snap").onclick   = e => {
+  draw();
+  canvas.toBlob(b => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "fission.png";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  });
+  e.target.blur();
+};
+
+function hidePanel(h){ ui.classList.toggle("hidden", h); showBtn.classList.toggle("on", h); }
+document.getElementById("hide").onclick = () => hidePanel(true);
+showBtn.onclick = () => { hidePanel(false); showBtn.blur(); };
+
+// live rule modifiers
+const pR = document.getElementById("pR"),   pRv = document.getElementById("pRv");
+const pT = document.getElementById("pT"),   pTv = document.getElementById("pTv");
+const pMu = document.getElementById("pMu"), pMuv = document.getElementById("pMuv");
+const pSig = document.getElementById("pSig"), pSigv = document.getElementById("pSigv");
+const pEta = document.getElementById("pEta"), pEtav = document.getElementById("pEtav");
+const pRing = document.getElementById("pRing"), pRingv = document.getElementById("pRingv");
+
+function applyRule(){
+  gl.useProgram(simProg);
+  gl.uniform1f(simU.uR, +pR.value);
+  gl.uniform1f(simU.uT, +pT.value);
+  gl.uniform1f(simU.uMuOff, +pMu.value);
+  gl.uniform1f(simU.uSigmaScale, +pSig.value);
+  gl.uniform1f(simU.uEtaScale, +pEta.value);
+  gl.uniform1f(simU.uRingW, +pRing.value);
+  gl.uniform1f(simU.uRelRScale, 1);
+  pRv.textContent = (+pR.value).toFixed(1);
+  pTv.textContent = (+pT.value).toFixed(1);
+  pMuv.textContent = (+pMu.value >= 0 ? "+" : "") + (+pMu.value).toFixed(3);
+  pSigv.textContent = (+pSig.value).toFixed(2) + "\u00d7";
+  pEtav.textContent = (+pEta.value).toFixed(2) + "\u00d7";
+  pRingv.textContent = (+pRing.value).toFixed(3);
+}
+for (const el of [pR, pT, pMu, pSig, pEta, pRing]) el.addEventListener("input", applyRule);
+document.getElementById("reset").onclick = e => {
+  pR.value = SPECIES.R; pT.value = SPECIES.T;
+  pMu.value = 0; pSig.value = 1; pEta.value = 1; pRing.value = 0.15;
+  applyRule(); e.target.blur();
+};
+
+// ---------- pan / zoom / paint ----------
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+function pointerBuffer(e){
+  const r = canvas.getBoundingClientRect();
+  const s = canvas.width / r.width;
+  return { x: (e.clientX - r.left) * s, y: (e.clientY - r.top) * s };
+}
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const p = pointerBuffer(e);
+  const cx = view.cx + (p.x - canvas.width*0.5) / view.px;
+  const cy = view.cy + (p.y - canvas.height*0.5) / view.px;
+  view.px = clamp(view.px * Math.exp(-e.deltaY * 0.0015), fitPx() * 0.15, 80);
+  view.cx = cx - (p.x - canvas.width*0.5) / view.px;
+  view.cy = cy - (p.y - canvas.height*0.5) / view.px;
+  userMoved = true;
+}, { passive:false });
+
+let panning = false, painting = false, lastX = 0, lastY = 0, active = null;
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("pointerdown", e => {
+  if (e.pointerType === "mouse" && (e.button === 2 || e.button === 1 || e.shiftKey)){
+    panning = true; lastX = e.clientX; lastY = e.clientY;
+    canvas.classList.add("panning");
+  } else if (e.pointerType === "mouse" && e.button !== 0){
+    return;
+  } else {
+    painting = true; stamp(e);
+  }
+  active = e.pointerId;
+  canvas.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+canvas.addEventListener("pointermove", e => {
+  if (e.pointerId !== active) return;
+  if (painting){ stamp(e); return; }
+  if (!panning) return;
+  const s = canvas.width / canvas.getBoundingClientRect().width;
+  view.cx -= (e.clientX - lastX) * s / view.px;
+  view.cy -= (e.clientY - lastY) * s / view.px;
+  lastX = e.clientX; lastY = e.clientY;
+  userMoved = true;
+});
+function endPointer(e){
+  if (e.pointerId !== active) return;
+  panning = painting = false;
+  canvas.classList.remove("panning");
+  active = null;
+  if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+}
+canvas.addEventListener("pointerup", endPointer);
+canvas.addEventListener("pointercancel", endPointer);
+canvas.addEventListener("dblclick", () => fitView());
+
+function typing(){
+  const el = document.activeElement;
+  return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+}
+window.addEventListener("keydown", e => {
+  if (e.code === "Space" && !typing()){ e.preventDefault(); setPaused(!paused); return; }
+  if (typing()) return;
+  switch (e.key.toLowerCase()){
+    case "d": reseed(); break;
+    case "s": clearTank(); break;
+    case "f": fitView(); break;
+    case "h": hidePanel(!ui.classList.contains("hidden")); break;
+    default: return;
+  }
+  e.preventDefault();
+});
+
+window.addEventListener("resize", () => {
+  resize();
+  if (!userMoved) fitView();
+});
+
+// ---------- main loop ----------
+// GL work is submitted asynchronously, so wall-clock timing around step() sees
+// nothing. Use the frame interval instead: a slow frame halves the per-frame
+// step budget at once, healthy frames grow it back. It settles at whatever this
+// machine can actually sustain.
+const HARD_MAX = 32, MAX_DT = 0.05, TARGET_MS = 1000/60;
+let maxSteps = 4, lastT = performance.now(), lastN = 0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+  const rawMs = now - lastT;
+  let dt = rawMs / 1000; lastT = now;
+  if (dt > MAX_DT) dt = MAX_DT;
+
+  if (!paused){
+    if (rawMs > TARGET_MS * 2) maxSteps = Math.max(1, maxSteps * 0.5);
+    else if (rawMs < TARGET_MS * 1.25 && lastN >= Math.floor(maxSteps))
+      maxSteps = Math.min(HARD_MAX, maxSteps + 0.5);
+
+    acc += dt;
+    const stepDur = 1 / stepsPerSec, cap = Math.max(1, Math.floor(maxSteps));
+    let n = 0;
+    while (acc >= stepDur && n < cap){ step(); acc -= stepDur; n++; }
+    if (acc > stepDur) acc = stepDur;
+    lastN = n;
+
+    if (autoEl.checked && now - lastCheck > 4000){
+      lastCheck = now;
+      try { if (tankIsDead()) reseed(); } catch (err) { autoEl.checked = false; }
+    }
+  }
+  draw();
+}
+
+resize();
+build();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
